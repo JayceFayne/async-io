@@ -76,11 +76,13 @@ use std::{
 use futures_lite::io::{AsyncRead, AsyncWrite};
 use futures_lite::stream::{self, Stream};
 use futures_lite::{future, pin};
-use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::reactor::{Reactor, Source};
 
 mod reactor;
+mod socket;
+
+use socket::{Domain, Protocol, Socket, Type};
 
 /// Blocks the current thread on a future, processing I/O events when idle.
 ///
@@ -910,8 +912,7 @@ impl Async<TcpStream> {
         let socket = Socket::new(domain, Type::stream(), Some(Protocol::tcp()))?;
 
         // Begin async connect and ignore the inevitable "in progress" error.
-        socket.set_nonblocking(true)?;
-        socket.connect(&addr.into()).or_else(|err| {
+        socket.connect(addr).or_else(|err| {
             // Check for EINPROGRESS on Unix and WSAEWOULDBLOCK on Windows.
             #[cfg(unix)]
             let in_progress = err.raw_os_error() == Some(libc::EINPROGRESS);
@@ -925,7 +926,7 @@ impl Async<TcpStream> {
                 Err(err)
             }
         })?;
-        let stream = Async::new(socket.into_tcp_stream())?;
+        let stream = Async::new(TcpStream::from(socket))?;
 
         // The stream becomes writable when connected.
         stream.writable().await?;
@@ -1256,17 +1257,14 @@ impl Async<UnixStream> {
         let socket = Socket::new(Domain::unix(), Type::stream(), None)?;
 
         // Begin async connect and ignore the inevitable "in progress" error.
-        socket.set_nonblocking(true)?;
-        socket
-            .connect(&socket2::SockAddr::unix(path)?)
-            .or_else(|err| {
-                if err.kind() == io::ErrorKind::WouldBlock {
-                    Ok(())
-                } else {
-                    Err(err)
-                }
-            })?;
-        let stream = Async::new(socket.into_unix_stream())?;
+        socket.connect(socket::Addr::unix(path)?).or_else(|err| {
+            if err.kind() == io::ErrorKind::WouldBlock {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        })?;
+        let stream = Async::new(UnixStream::from(socket))?;
 
         // The stream becomes writable when connected.
         stream.writable().await?;
